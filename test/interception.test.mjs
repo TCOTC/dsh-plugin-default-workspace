@@ -8,10 +8,10 @@
  *
  * It executes the real browser bundle, materializes its factory, and drives the
  * two intercepted entry points against a fake `uiWorkspace` service whose shape
- * mirrors the stock one. Rules 21–27 cover the Settings row: the stored
- * preference the row writes, and the folder chooser it drives through the
- * Desktop preload bridge. Exit code 0 means every rule still holds; a failure
- * names the rule that broke.
+ * mirrors the stock one. Rules 21–27 cover the Settings page: the stored
+ * preference the page writes, its own navigation tab, and the folder chooser it
+ * drives through the Desktop preload bridge. Exit code 0 means every rule still
+ * holds; a failure names the rule that broke.
  */
 import assert from "node:assert/strict";
 import { readFileSync, existsSync } from "node:fs";
@@ -73,7 +73,24 @@ const reactStub = {
 const plugin = factory((id) => (id === "react" ? reactStub : undefined));
 assert.equal(typeof plugin.apply, "function", "the browser half must export apply");
 assert.equal(plugin.inject, undefined, "the browser half must not gate itself on an inject it may never see");
-const { SETTINGS_KEY, SETTINGS_NS, SETTINGS_ROW_ID } = plugin.internals;
+const { SETTINGS_KEY, SETTINGS_NS, SETTINGS_PAGE_ID, SETTINGS_ORDER } = plugin.internals;
+/**
+ * Depth-first search for the first element of one type in a rendered tree.
+ * @param node - element tree node.
+ * @param type - element type to find.
+ * @returns the element, or undefined.
+ */
+function findElement(node, type) {
+	if (node === null || node === undefined || typeof node !== "object") return;
+	if (node.type === type) return node;
+	const children = node.props?.children;
+	if (!Array.isArray(children)) return;
+	for (const child of children) {
+		const found = findElement(child, type);
+		if (found !== undefined) return found;
+	}
+	return;
+}
 
 /**
  * Build a fake `uiWorkspace` service, its projections, and a call recorder.
@@ -417,26 +434,28 @@ const readyItems = [
 	assert.deepEqual(calls.restoreSelection, [true], "an unregistered stored folder must keep the stock restore");
 	localStorage.removeItem(SETTINGS_KEY);
 }
-// 24. the folder is edited from the Settings dialog's General section.
+// 24. the folder is edited from a Settings page with its own navigation tab.
 {
 	resetProbes();
 	const { registrations, dictionaries } = harness({ items: readyItems });
-	const row = registrations.find((entry) => entry.slot === "settings.general.item");
-	assert.ok(row !== undefined, "the plugin must contribute a row to the Settings General section");
-	assert.equal(row.contribution.options.id, SETTINGS_ROW_ID, "the row must claim this plugin's own slot id");
-	assert.equal(row.contribution.options.name, "settings.general.item", "the row must register under the declared slot type");
-	assert.equal(typeof row.contribution.options.inject, "function", "the row's data and write path come from its inject face");
-	assert.equal(typeof row.contribution.component, "function", "the row must ship a component");
-	assert.ok(dictionaries.some((entry) => entry.namespace === SETTINGS_NS), "the row's copy must be registered under its own locale namespace");
+	const page = registrations.find((entry) => entry.slot === "settings.section");
+	assert.ok(page !== undefined, "the plugin must contribute a Settings section of its own");
+	assert.equal(page.contribution.options.name, "settings.section", "the page must register under the declared section slot");
+	assert.equal(page.contribution.options.id, SETTINGS_PAGE_ID, "the page must claim this plugin's own section id");
+	assert.equal(page.contribution.options.order, SETTINGS_ORDER, "the page must place itself after the shipped sections");
+	assert.equal(typeof page.contribution.options.label, "function", "the navigation tab must re-read its label per projection so it follows the locale");
+	assert.equal(typeof page.contribution.options.inject, "function", "the page's data and write path come from its inject face");
+	assert.equal(typeof page.contribution.component, "function", "the page must ship a component");
+	assert.ok(dictionaries.some((entry) => entry.namespace === SETTINGS_NS), "the page's copy must be registered under its own locale namespace");
 }
-// 25. choosing a registered Workspace in the row drives the next decision, with no re-apply.
+// 25. choosing a registered Workspace on the page drives the next decision, with no re-apply.
 {
 	resetProbes();
 	const { registrations, service, calls } = harness({ items: readyItems, mainReference: undefined });
-	const row = registrations.find((entry) => entry.slot === "settings.general.item");
-	const props = { ...row.contribution.options.inject(), t: (key) => key };
-	const select = row.contribution.component(props).props.children.find((child) => child.type === "select");
-	assert.ok(select !== undefined, "the row must render the folder selector");
+	const page = registrations.find((entry) => entry.slot === "settings.section");
+	const props = { ...page.contribution.options.inject(), t: (key) => key, close: () => {} };
+	const select = findElement(page.contribution.component(props), "select");
+	assert.ok(select !== undefined, "the page must render the folder selector");
 	assert.equal(select.props.value, `workspace:${DEFAULT_ID}`, "while nothing is stored, the compiled-in default shows as the current folder");
 	select.props.onChange({ target: { value: `workspace:${OTHER_ID}` } });
 	const stored = JSON.parse(localStorage.getItem(SETTINGS_KEY));
@@ -461,10 +480,10 @@ const readyItems = [
 	};
 	globalThis.__DSH_DIRECTORY_PICKER__ = { pick: async () => "D:\\Brand\\New" };
 	try {
-		const row = registrations.find((entry) => entry.slot === "settings.general.item");
-		const props = { ...row.contribution.options.inject(), t: (key) => key };
-		const button = row.contribution.component(props).props.children.find((child) => child.type === "button");
-		assert.ok(button !== undefined, "the row must render the folder chooser button");
+		const page = registrations.find((entry) => entry.slot === "settings.section");
+		const props = { ...page.contribution.options.inject(), t: (key) => key, close: () => {} };
+		const button = findElement(page.contribution.component(props), "button");
+		assert.ok(button !== undefined, "the page must render the folder chooser button");
 		await button.props.onClick();
 		assert.deepEqual(created, [{ path: "D:\\Brand\\New" }], "a folder outside the registry must be registered the way Add workspace… does");
 		assert.equal(JSON.parse(localStorage.getItem(SETTINGS_KEY)).target.workspaceId, "created-workspace", "the adopted Workspace must become the stored default");
@@ -481,15 +500,16 @@ const readyItems = [
 	let adopted = 0;
 	globalThis.__DSH_DIRECTORY_PICKER__ = { pick: async () => null };
 	try {
-		const row = registrations.find((entry) => entry.slot === "settings.general.item");
+		const page = registrations.find((entry) => entry.slot === "settings.section");
 		const props = {
-			...row.contribution.options.inject(),
+			...page.contribution.options.inject(),
 			t: (key) => key,
+			close: () => {},
 			adopt: async () => {
 				adopted += 1;
 			}
 		};
-		const button = row.contribution.component(props).props.children.find((child) => child.type === "button");
+		const button = findElement(page.contribution.component(props), "button");
 		await button.props.onClick();
 		assert.equal(adopted, 0, "a cancelled pick must not register a Workspace");
 		assert.equal(localStorage.getItem(SETTINGS_KEY), null, "a cancelled pick must not store a preference");

@@ -29,7 +29,8 @@ already has Sessions.
 
 ## Choosing the folder
 
-Settings → **General** carries one row from this plugin, **Default folder**:
+Settings carries one page from this plugin, **Default folder**, as its own
+navigation tab (`settings.section`, order 30 — after the shipped sections):
 
 - the selector lists every registered Workspace by path, plus **Follow DSH**,
   which switches the plugin off and restores the stock "most recently active
@@ -45,7 +46,7 @@ Settings → **General** carries one row from this plugin, **Default folder**:
   applies to the next New Session with no reload and no re-apply.
 
 With nothing stored, the compiled-in `DEFAULT_WORKSPACE_PATH` still applies, so
-an installation that never opens the row behaves exactly as it did before. A
+an installation that never opens the page behaves exactly as it did before. A
 stored folder that is not registered has no effect and the stock rule stays in
 charge — this plugin never invents a Workspace.
 
@@ -59,9 +60,9 @@ from a bare `file:///…` path cannot resolve. See *Why localStorage* below.
 | Path | Role |
 |---|---|
 | `package.json` | Package manifest: host half plus the `dsh.client` declaration and `exports["./client"]` the Client module system scans |
-| `lib/index.js` | Host half — deliberately empty; the policy and its Settings row are browser-side |
-| `lib/client.js` | Browser half — wraps `uiWorkspace.startSession` and `uiWorkspace.restoreSelection`, and contributes the General-section row |
-| `test/interception.test.mjs` | Maintenance check: runs the real browser bundle against a fake `uiWorkspace` and asserts every rule above, the Settings row included |
+| `lib/index.js` | Host half — deliberately empty; the policy and its Settings page are browser-side |
+| `lib/client.js` | Browser half — wraps `uiWorkspace.startSession` and `uiWorkspace.restoreSelection`, and contributes the **Default folder** Settings page |
+| `test/interception.test.mjs` | Maintenance check: runs the real browser bundle against a fake `uiWorkspace` and asserts every rule above, the Settings page included |
 | `test/host-integration.test.mjs` | Maintenance check: asks the running Host whether it composes and serves this plugin's browser half |
 | `test/probe-report.mjs` | Reads the decision trace the browser half writes into the page's localStorage |
 | `CHANGELOG.md` | Release notes |
@@ -133,7 +134,7 @@ Reload rules when editing this plugin:
   `test/host-integration.test.mjs`, which derives the revision from the file's own
   metadata). The **page**, however, does not re-fetch it on its own — the Electron
   HTTP cache showed no new bundle fetch after boot — so a **page reload or app
-  restart** is what loads the new half, and with it the Settings row.
+  restart** is what loads the new half, and with it the Settings page.
 - **Bump `POLICY_VERSION` whenever the wrapped policy changes**, otherwise a page
   that already installed the old wrapper treats the new half as a no-op.
 
@@ -155,9 +156,9 @@ $plugin = "$env:USERPROFILE\.dsh\plugins\dsh-plugin-default-workspace"
 
 In the GUI:
 
-- Open **Settings → General**: the **Default folder** row must appear. Pick a
-  Workspace, or **Choose another folder…** and pick a directory; the row must
-  show the new folder immediately.
+- Open **Settings**: a **Default folder** tab must appear in the navigation,
+  after the shipped sections. Pick a Workspace, or **Choose another folder…** and
+  pick a directory; the page must show the new folder immediately.
 - Quit and reopen the app while an **empty** New Session in another folder was the
   last thing open — the app must come up on a New Session in the chosen folder.
 - Quit and reopen while a **conversation** in another folder was the last thing
@@ -166,7 +167,7 @@ In the GUI:
   it must stay in that folder. With an empty New Session open in another folder,
   Ctrl+N must go to the chosen folder; a workspace row's own **+** always targets
   that row's folder.
-- Select **Follow DSH** in the row and repeat the last check: the new Session must
+- Select **Follow DSH** on the page and repeat the last check: the new Session must
   stay in the most recently active Workspace instead.
 
 ## Disable or remove
@@ -175,7 +176,7 @@ In the GUI:
   unmounts the entry live; otherwise restart).
 - Remove completely: delete `%USERPROFILE%\.dsh\plugins\dsh-plugin-default-workspace`.
 - Remove the stored preference: clear the `dsh.default-workspace.settings` key
-  from the app's localStorage (the row's **Follow DSH** choice is stored there
+  from the app's localStorage (the page's **Follow DSH** choice is stored there
   too).
 - The profile patch as it was before this plugin was added is not part of this
   package; keep your own copy of `cordis.patch.yml` if you want one.
@@ -185,11 +186,11 @@ In the GUI:
 The browser half depends on private members of the stock `uiWorkspace` service
 (`workspaces.list`, `workspaces.create`, `pickDirectory`, `sessions`,
 `selection`, `mainReference`, `lifetime`, `connectWorkspace`, `replaceMain`), on
-the Session summary's `blank` flag, and — for the Settings row — on the
-`settings.general.item` slot type and the `slots`/`locale` services. A DSH update
+the Session summary's `blank` flag, and — for the Settings page — on the
+`settings.section` slot type and the `slots`/`locale` services. A DSH update
 may rename them; the wrappers then fail closed into the stock behavior (a console
 warning appears in the renderer, and the trace records `interception-failed`),
-and the row either disappears or reports `settings-row-failed`. Re-run the checks
+and the page either disappears or reports `settings-page-failed`. Re-run the checks
 above after an update: a failure names the rule that broke.
 
 `DEFAULT_WORKSPACE_PATH` and `DEFAULT_WORKSPACE_ID` in `lib/client.js` are now

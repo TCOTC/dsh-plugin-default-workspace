@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.2.0
+
+- The preference moved from a row inside Settings → General to a **page with its
+  own navigation tab**: it registers into the `settings.section` slot at order
+  30, after the shipped sections (Account −10, General 0, Models 10, Plugins 15,
+  Agent presets 20), with a locale-following `label` thunk.
+- The page renders the same selector and chooser, now with the registered
+  Workspace count, an empty-state note when nothing is registered, and its own
+  page stylesheet.
+- Test rules 24–27 now assert the section registration (slot, id, order, label
+  thunk) and drive the page component through its rendered element tree.
+
 ## 1.1.0
 
 - The pinned folder is now a user preference instead of a build-time constant:
