@@ -1,0 +1,37 @@
+{
+  "name": "dsh-plugin-default-workspace",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Pins the no-context default Workspace for new Sessions to a chosen folder (D:\\dsh-workspace).",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web"
+    }
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "workspace"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/TCOTC/dsh-plugin-default-workspace.git"
+  },
+  "homepage": "https://github.com/TCOTC/dsh-plugin-default-workspace#readme",
+  "bugs": {
+    "url": "https://github.com/TCOTC/dsh-plugin-default-workspace/issues"
+  },
+  "license": "MIT"
+}
