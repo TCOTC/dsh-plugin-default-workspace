@@ -8,7 +8,9 @@
  *
  * It executes the real browser bundle, materializes its factory, and drives the
  * two intercepted entry points against a fake `uiWorkspace` service whose shape
- * mirrors the stock one. Exit code 0 means every rule still holds; a failure
+ * mirrors the stock one. Rules 21–27 cover the Settings row: the stored
+ * preference the row writes, and the folder chooser it drives through the
+ * Desktop preload bridge. Exit code 0 means every rule still holds; a failure
  * names the rule that broke.
  */
 import assert from "node:assert/strict";
@@ -59,11 +61,19 @@ await import(pathToFileURL(clientPath).href);
 assert.ok(registration !== undefined, "the browser half did not register with window.__ModuleLoader__");
 assert.equal(registration.id, PKG, "the registered module id must equal the package name");
 const factory = registration.factory;
-const plugin = factory(() => {
-	throw new Error("the browser half must not require any other module");
-});
+/**
+ * React stand-in: the bundle may require the shell's React for its Settings row
+ * and must not need any other module.
+ */
+const reactStub = {
+	createElement: (type, props, ...children) => ({ type, props: { ...(props ?? {}), children } }),
+	useState: (initial) => [typeof initial === "function" ? initial() : initial, () => {}],
+	useEffect: () => {}
+};
+const plugin = factory((id) => (id === "react" ? reactStub : undefined));
 assert.equal(typeof plugin.apply, "function", "the browser half must export apply");
 assert.equal(plugin.inject, undefined, "the browser half must not gate itself on an inject it may never see");
+const { SETTINGS_KEY, SETTINGS_NS, SETTINGS_ROW_ID } = plugin.internals;
 
 /**
  * Build a fake `uiWorkspace` service, its projections, and a call recorder.
@@ -112,7 +122,44 @@ function harness({ items, selection = {}, mainReference, phases = "ready", conne
 		}
 	};
 	let visible = !late;
-	const ctx = { get: (name) => (visible && name === "uiWorkspace" ? service : undefined) };
+	/** Slot registry stand-in: records what the settings row registers, and where. */
+	const registrations = [];
+	const effects = [];
+	const slots = {
+		inject(name, register) {
+			registrations.push({ slot: name, contribution: register() });
+		},
+		register(options, component) {
+			return { options, component };
+		}
+	};
+	/** Locale stand-in: `bind` resolves the dictionaries the plugin registered. */
+	const dictionaries = [];
+	const locale = {
+		register(namespace, sets) {
+			dictionaries.push({ namespace, sets });
+		},
+		bind: (namespace) => (key, values) => {
+			const entry = dictionaries.find((item) => item.namespace === namespace);
+			const template = entry?.sets?.en?.[key] ?? key;
+			if (values === undefined) return template;
+			return template.replace(/\{(\w+)\}/gu, (match, name) => (name in values ? String(values[name]) : match));
+		}
+	};
+	const ctx = {
+		get: (name) => {
+			if (name === "uiWorkspace") return visible ? service : undefined;
+			if (name === "slots") return slots;
+			if (name === "locale") return locale;
+			return undefined;
+		},
+		// Cordis runs an effect body immediately and keeps its disposer.
+		effect: (callback) => {
+			const disposer = callback();
+			effects.push(disposer);
+			return disposer;
+		}
+	};
 	plugin.apply(ctx);
 	/** The two projection snapshots the stock `restoreSelection` receives from its caller. */
 	const args = [workspaces, sessions];
@@ -120,6 +167,8 @@ function harness({ items, selection = {}, mainReference, phases = "ready", conne
 		service,
 		calls,
 		args,
+		registrations,
+		dictionaries,
 		reapply: () => plugin.apply(ctx),
 		releaseService: () => {
 			visible = true;
@@ -328,4 +377,125 @@ const readyItems = [
 	assert.deepEqual(calls.restoreSelection, [], "the pinned path must not also run the stock restore");
 }
 
-console.log(`ok — ${String(20)} rule groups hold for ${PKG}`);
+// 21. a folder stored in Settings overrides the compiled-in default.
+{
+	resetProbes();
+	localStorage.setItem(SETTINGS_KEY, JSON.stringify({ target: {
+		path: "D:\\ExampleProjects\\sample-app",
+		workspaceId: OTHER_ID
+	} }));
+	const { service, calls } = harness({ items: readyItems, mainReference: undefined });
+	service.startSession();
+	await settle();
+	assert.deepEqual(calls.openWorkspace, [OTHER_ID], "the folder stored in Settings must win over the compiled-in default");
+	assert.deepEqual(calls.startSession, [], "a stored folder must not fall through to the stock target");
+	localStorage.removeItem(SETTINGS_KEY);
+}
+// 22. "follow DSH" is an explicit choice, not an unset value.
+{
+	resetProbes();
+	localStorage.setItem(SETTINGS_KEY, JSON.stringify({ target: null }));
+	const { service, calls } = harness({ items: readyItems, mainReference: undefined });
+	service.startSession();
+	await settle();
+	assert.deepEqual(calls.startSession, [undefined], "the stock choice must keep the stock target");
+	assert.deepEqual(calls.openWorkspace, [], "the stock choice must not open any pinned folder");
+	localStorage.removeItem(SETTINGS_KEY);
+}
+// 23. a stored folder that is not registered keeps the stock flow: never a broken target.
+{
+	resetProbes();
+	localStorage.setItem(SETTINGS_KEY, JSON.stringify({ target: {
+		path: "D:\\nowhere\\not-registered",
+		workspaceId: null
+	} }));
+	const { service, calls, args } = harness({ items: readyItems, selection: {} });
+	service.startSession();
+	await settle();
+	await service.restoreSelection(...args);
+	assert.deepEqual(calls.startSession, [undefined], "an unregistered stored folder must keep the stock target");
+	assert.deepEqual(calls.restoreSelection, [true], "an unregistered stored folder must keep the stock restore");
+	localStorage.removeItem(SETTINGS_KEY);
+}
+// 24. the folder is edited from the Settings dialog's General section.
+{
+	resetProbes();
+	const { registrations, dictionaries } = harness({ items: readyItems });
+	const row = registrations.find((entry) => entry.slot === "settings.general.item");
+	assert.ok(row !== undefined, "the plugin must contribute a row to the Settings General section");
+	assert.equal(row.contribution.options.id, SETTINGS_ROW_ID, "the row must claim this plugin's own slot id");
+	assert.equal(row.contribution.options.name, "settings.general.item", "the row must register under the declared slot type");
+	assert.equal(typeof row.contribution.options.inject, "function", "the row's data and write path come from its inject face");
+	assert.equal(typeof row.contribution.component, "function", "the row must ship a component");
+	assert.ok(dictionaries.some((entry) => entry.namespace === SETTINGS_NS), "the row's copy must be registered under its own locale namespace");
+}
+// 25. choosing a registered Workspace in the row drives the next decision, with no re-apply.
+{
+	resetProbes();
+	const { registrations, service, calls } = harness({ items: readyItems, mainReference: undefined });
+	const row = registrations.find((entry) => entry.slot === "settings.general.item");
+	const props = { ...row.contribution.options.inject(), t: (key) => key };
+	const select = row.contribution.component(props).props.children.find((child) => child.type === "select");
+	assert.ok(select !== undefined, "the row must render the folder selector");
+	assert.equal(select.props.value, `workspace:${DEFAULT_ID}`, "while nothing is stored, the compiled-in default shows as the current folder");
+	select.props.onChange({ target: { value: `workspace:${OTHER_ID}` } });
+	const stored = JSON.parse(localStorage.getItem(SETTINGS_KEY));
+	assert.equal(stored.target.workspaceId, OTHER_ID, "choosing a Workspace must store its identity");
+	assert.equal(stored.target.path, "D:\\ExampleProjects\\sample-app", "choosing a Workspace must store its path");
+	service.startSession();
+	await settle();
+	assert.deepEqual(calls.openWorkspace, [OTHER_ID], "the stored choice must drive the next decision without a re-apply");
+	localStorage.removeItem(SETTINGS_KEY);
+}
+// 26. the chooser registers a folder the Workspace registry does not know yet.
+{
+	resetProbes();
+	const { registrations, service } = harness({ items: readyItems, mainReference: undefined });
+	const created = [];
+	service.workspaces.create = async (input) => {
+		created.push(input);
+		return {
+			workspaceId: "created-workspace",
+			path: input.path
+		};
+	};
+	globalThis.__DSH_DIRECTORY_PICKER__ = { pick: async () => "D:\\Brand\\New" };
+	try {
+		const row = registrations.find((entry) => entry.slot === "settings.general.item");
+		const props = { ...row.contribution.options.inject(), t: (key) => key };
+		const button = row.contribution.component(props).props.children.find((child) => child.type === "button");
+		assert.ok(button !== undefined, "the row must render the folder chooser button");
+		await button.props.onClick();
+		assert.deepEqual(created, [{ path: "D:\\Brand\\New" }], "a folder outside the registry must be registered the way Add workspace… does");
+		assert.equal(JSON.parse(localStorage.getItem(SETTINGS_KEY)).target.workspaceId, "created-workspace", "the adopted Workspace must become the stored default");
+	} finally {
+		delete globalThis.__DSH_DIRECTORY_PICKER__;
+		localStorage.removeItem(SETTINGS_KEY);
+	}
+}
+// 27. cancelling the chooser changes nothing.
+{
+	resetProbes();
+	localStorage.removeItem(SETTINGS_KEY);
+	const { registrations } = harness({ items: readyItems, mainReference: undefined });
+	let adopted = 0;
+	globalThis.__DSH_DIRECTORY_PICKER__ = { pick: async () => null };
+	try {
+		const row = registrations.find((entry) => entry.slot === "settings.general.item");
+		const props = {
+			...row.contribution.options.inject(),
+			t: (key) => key,
+			adopt: async () => {
+				adopted += 1;
+			}
+		};
+		const button = row.contribution.component(props).props.children.find((child) => child.type === "button");
+		await button.props.onClick();
+		assert.equal(adopted, 0, "a cancelled pick must not register a Workspace");
+		assert.equal(localStorage.getItem(SETTINGS_KEY), null, "a cancelled pick must not store a preference");
+	} finally {
+		delete globalThis.__DSH_DIRECTORY_PICKER__;
+	}
+}
+
+console.log(`ok — ${String(27)} rule groups hold for ${PKG}`);
