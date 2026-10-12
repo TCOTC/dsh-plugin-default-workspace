@@ -7,11 +7,13 @@
  *   node test/interception.test.mjs
  *
  * It executes the real browser bundle, materializes its factory, and drives the
- * two intercepted entry points against a fake `uiWorkspace` service whose shape
+ * intercepted entry points against a fake `uiWorkspace` service whose shape
  * mirrors the stock one. Rules 21–27 cover the Settings page: the stored
  * preference the page writes, its own navigation tab, and the folder chooser it
- * drives through the Desktop preload bridge. Exit code 0 means every rule still
- * holds; a failure names the rule that broke.
+ * drives through the Desktop preload bridge. Rules 28–37 cover the archive
+ * clear: the Workspace an archived main Session comes back in, the pinned
+ * fallback, and every way that interception must stay out of the way. Exit code
+ * 0 means every rule still holds; a failure names the rule that broke.
  */
 import assert from "node:assert/strict";
 import { readFileSync, existsSync } from "node:fs";
@@ -100,14 +102,18 @@ function findElement(node, type) {
  * which models a plugin applied before the service exists.
  */
 function harness({ items, selection = {}, mainReference, phases = "ready", connectThrows = false, late = false }) {
-	const calls = { startSession: [], restoreSelection: [], openWorkspace: [], connectWorkspace: [], replaceMain: [] };
+	const calls = {
+		startSession: [], restoreSelection: [], openWorkspace: [], connectWorkspace: [], replaceMain: [], clearMain: [], archiveSession: []
+	};
 	const workspaces = { phase: phases, items };
 	const sessions = {
 		phase: phases,
 		byId: {
 			"live-session": { id: "live-session", blank: false },
 			"blank-elsewhere": { id: "blank-elsewhere", blank: true },
-			"blank-default": { id: "blank-default", blank: true }
+			"blank-default": { id: "blank-default", blank: true },
+			// A Session outside every Workspace: nothing names a folder for it.
+			"loose-session": { id: "loose-session", blank: false }
 		}
 	};
 	const service = {
@@ -136,7 +142,25 @@ function harness({ items, selection = {}, mainReference, phases = "ready", conne
 		},
 		async openWorkspace(workspaceId) {
 			calls.openWorkspace.push(workspaceId);
+		},
+		/** Stock `clearMain`: drop the main reference and the saved selection. */
+		clearMain() {
+			calls.clearMain.push(true);
+			const previous = service.mainReference;
+			service.mainReference = undefined;
+			previous?.release?.();
+		},
+		/** Stock `archiveSession`: archive on the Host, then clear a main view it held. */
+		async archiveSession(sessionId) {
+			calls.archiveSession.push(sessionId);
+			if (service.mainReference?.sessionId === sessionId) service.clearMain();
 		}
+	};
+	/** The unwrapped stock methods, so a test can model an upgrade from an older revision. */
+	const stock = {
+		startSession: service.startSession,
+		restoreSelection: service.restoreSelection,
+		clearMain: service.clearMain
 	};
 	let visible = !late;
 	/** Slot registry stand-in: records what the settings row registers, and where. */
@@ -184,6 +208,7 @@ function harness({ items, selection = {}, mainReference, phases = "ready", conne
 		service,
 		calls,
 		args,
+		stock,
 		registrations,
 		dictionaries,
 		reapply: () => plugin.apply(ctx),
@@ -518,4 +543,126 @@ const readyItems = [
 	}
 }
 
-console.log(`ok — ${String(27)} rule groups hold for ${PKG}`);
+// 28. archiving the Session you are viewing reopens its own Workspace.
+{
+	resetProbes();
+	const { service, calls } = harness({ items: readyItems, mainReference: { sessionId: "live-session" } });
+	await service.archiveSession("live-session");
+	await settle();
+	assert.deepEqual(calls.clearMain, [true], "archiving the main Session must run the stock clear exactly once");
+	assert.deepEqual(calls.openWorkspace, [OTHER_ID], "the Workspace the archived Session was in must come back");
+}
+// 29. a cleared Session that belonged to no Workspace falls back to the pinned folder.
+{
+	resetProbes();
+	const { service, calls } = harness({ items: readyItems, mainReference: { sessionId: "loose-session" } });
+	await service.archiveSession("loose-session");
+	await settle();
+	assert.deepEqual(calls.openWorkspace, [DEFAULT_ID], "a cleared Session outside every Workspace must fall back to the pinned folder");
+}
+// 30. archiving some other row leaves the main view alone.
+{
+	resetProbes();
+	const { service, calls } = harness({ items: readyItems, mainReference: { sessionId: "live-session" } });
+	await service.archiveSession("blank-elsewhere");
+	await settle();
+	assert.deepEqual(calls.clearMain, [], "archiving another row must not clear the main view");
+	assert.deepEqual(calls.openWorkspace, [], "archiving another row must not navigate");
+}
+// 31. a clear that removed no main Session is left exactly as stock left it.
+{
+	resetProbes();
+	const { service, calls } = harness({ items: readyItems, mainReference: undefined });
+	service.clearMain();
+	await settle();
+	assert.deepEqual(calls.clearMain, [true], "the stock clear must still happen with nothing selected");
+	assert.deepEqual(calls.openWorkspace, [], "a clear with no main Session must not invent a navigation");
+	assert.ok(
+		probeEvents().some((event) => event.event === "clearMain" && event.detail.reason === "no-main-session"),
+		"a clear that owned nothing must say so in the trace"
+	);
+}
+// 32. the archive interception is still the user's choice: Follow DSH leaves it alone.
+{
+	resetProbes();
+	localStorage.setItem(SETTINGS_KEY, JSON.stringify({ target: null }));
+	const { service, calls } = harness({ items: readyItems, mainReference: { sessionId: "loose-session" } });
+	service.clearMain();
+	await settle();
+	assert.deepEqual(calls.openWorkspace, [], "the stock choice must leave a cleared Session with no folder of its own alone");
+	localStorage.removeItem(SETTINGS_KEY);
+}
+// 33. the archive decision is in the trace the Host side reads.
+{
+	resetProbes();
+	const { service } = harness({ items: readyItems, mainReference: { sessionId: "live-session" } });
+	service.clearMain();
+	await settle();
+	const decision = probeEvents().find((event) => event.event === "clearMain");
+	assert.ok(decision !== undefined, "the archive decision must be recorded");
+	assert.equal(decision.detail.branch, "keep", "the trace must name the kept-Workspace branch");
+	assert.equal(decision.detail.target, OTHER_ID, "the trace must name the Workspace that came back");
+}
+// 34. a failing reopen must not reach the stock navigation that called the clear.
+{
+	resetProbes();
+	const { service, calls } = harness({ items: readyItems, mainReference: { sessionId: "live-session" } });
+	service.openWorkspace = () => {
+		throw new Error("reopen failed");
+	};
+	service.clearMain();
+	await settle();
+	assert.deepEqual(calls.clearMain, [true], "a failing reopen must still let the stock clear happen");
+	assert.ok(
+		probeEvents().some((event) => event.event === "clearMain" && event.detail.reason === "reopen-failed"),
+		"a failing reopen must be recorded"
+	);
+}
+// 35. an unreadable projection must not block the stock clear.
+{
+	resetProbes();
+	const { service, calls } = harness({ items: readyItems, mainReference: { sessionId: "live-session" } });
+	service.workspaces.list.getSnapshot = () => {
+		throw new Error("projection failed");
+	};
+	service.clearMain();
+	await settle();
+	assert.deepEqual(calls.clearMain, [true], "an unreadable projection must not block the stock clear");
+	assert.deepEqual(calls.openWorkspace, [], "an unreadable projection must not navigate");
+	assert.ok(
+		probeEvents().some((event) => event.event === "clearMain" && event.detail.reason === "interception-failed"),
+		"the failed interception must be recorded"
+	);
+}
+// 36. reapplying wraps the clear once.
+{
+	resetProbes();
+	const { service, calls, reapply } = harness({ items: readyItems, mainReference: { sessionId: "live-session" } });
+	reapply();
+	service.clearMain();
+	await settle();
+	assert.deepEqual(calls.clearMain, [true], "a repeated apply must run the stock clear once");
+	assert.deepEqual(calls.openWorkspace, [OTHER_ID], "a repeated apply must not stack a second reopen on the first");
+}
+// 37. an upgrade from a revision that never wrapped the clear must wrap the stock method.
+{
+	resetProbes();
+	const { service, calls, reapply, stock } = harness({ items: readyItems, mainReference: { sessionId: "live-session" } });
+	// The installed revision wrapped only the two navigation entries: its marker
+	// does not name `clearMain`, and the instance still holds the stock method.
+	service.__defaultWorkspaceFallback = {
+		version: 6,
+		originals: {
+			startSession: stock.startSession,
+			restoreSelection: stock.restoreSelection
+		}
+	};
+	service.clearMain = stock.clearMain;
+	reapply();
+	service.clearMain();
+	await settle();
+	assert.deepEqual(calls.clearMain, [true], "the upgraded wrapper must run the stock clear once");
+	assert.deepEqual(calls.openWorkspace, [OTHER_ID], "an upgrade must wrap the stock clear, not delegate into a hole");
+}
+
+console.log(`ok — ${String(37)} rule groups hold for ${PKG}`);

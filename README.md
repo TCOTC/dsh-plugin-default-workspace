@@ -14,12 +14,21 @@ configuration:
 | The app opens on a saved Session holding a conversation | that Session is restored | unchanged |
 | An explicit target is passed (a workspace row's **+**, *add workspace*) | that target is used | unchanged |
 | **Nothing to go on**: no saved selection, a saved Session that no longer exists, or a saved/current **empty New Session** (nothing ever sent) | the *most recently active* Workspace | **the folder chosen in Settings** |
+| **The Session you are viewing is archived** | the main selection is cleared and the app drops to its *choose a Workspace* hero | **a new Session in that Session's own Workspace**, or the chosen folder when it had no Workspace |
 
 An empty New Session is not "already conversing in another folder": DSH marks a
 Session `blank` (`SessionSummary.blank`) until its first turn starts, and that
-flag is what decides the last row above. Clicking a workspace row and typing
-still starts the conversation in that folder; the folder only takes over once
-there is a conversation in it.
+flag is what decides the last-but-one row above. Clicking a workspace row and
+typing still starts the conversation in that folder; the folder only takes over
+once there is a conversation in it.
+
+Archiving is the one case where the folder that comes back is *not* the chosen
+one: the conversation is gone but the project is not, so archiving a Session in
+`D:\CodeProjects\Moltenfrost` leaves you in `Moltenfrost` with a fresh New
+Session. A Session that belonged to no Workspace has no folder of its own to
+keep, so it falls back to the chosen folder — the same rule as the row above.
+Only clearing a main Session is honoured this way; archiving any other row
+navigates nothing, exactly as before.
 
 The Host owns no setting for this. The only "default workspace" concept in DSH
 (`workspaceRegistry.initializeDefault`, `<Documents>\deepseek-harness\default-workspace`)
@@ -61,17 +70,18 @@ from a bare `file:///…` path cannot resolve. See *Why localStorage* below.
 |---|---|
 | `package.json` | Package manifest: host half plus the `dsh.client` declaration and `exports["./client"]` the Client module system scans |
 | `lib/index.js` | Host half — deliberately empty; the policy and its Settings page are browser-side |
-| `lib/client.js` | Browser half — wraps `uiWorkspace.startSession` and `uiWorkspace.restoreSelection`, and contributes the **Default folder** Settings page |
+| `lib/client.js` | Browser half — wraps `uiWorkspace.startSession`, `uiWorkspace.restoreSelection`, and `uiWorkspace.clearMain`, and contributes the **Default folder** Settings page |
 | `test/interception.test.mjs` | Maintenance check: runs the real browser bundle against a fake `uiWorkspace` and asserts every rule above, the Settings page included |
 | `test/host-integration.test.mjs` | Maintenance check: asks the running Host whether it composes and serves this plugin's browser half |
 | `test/probe-report.mjs` | Reads the decision trace the browser half writes into the page's localStorage |
 | `CHANGELOG.md` | Release notes |
 | `LICENSE` | MIT |
 
-The browser half wraps the two navigation entry points on the `uiWorkspace`
-service instance. Both wrappers delegate to the stock method for every case they
-do not own, and swallow their own failures back into the stock flow, so the
-worst case is exactly the stock behavior.
+The browser half wraps three navigation entry points on the `uiWorkspace`
+service instance. The two navigation wrappers delegate to the stock method for
+every case they do not own; the third wraps the clear that ends an archive.
+Every wrapper swallows its own failures back into the stock flow, so the worst
+case is exactly the stock behavior.
 
 ### Why localStorage
 
@@ -84,9 +94,9 @@ which is also where the policy lives. The cost is that it is per browser origin
 and invisible to the Host configuration file; the benefit is a plugin with no
 dependencies at all.
 
-## Three constraints this plugin had to learn the hard way
+## Four constraints this plugin had to learn the hard way
 
-Each one caused a silent, evidence-free failure on the live Desktop app; the
+Each one was learned against the live app rather than from documentation; the
 traces from `test/probe-report.mjs` are what pinned them down.
 
 1. **Declare no `inject`.** With `inject: ["uiWorkspace"]` the plugin never
@@ -104,6 +114,21 @@ traces from `test/probe-report.mjs` are what pinned them down.
 3. **`blank`, not "exists", decides.** A saved Session that still exists but
    never received a turn is an empty New Session, and must not pin its folder.
    DSH's `SessionSummary.blank` carries exactly that fact.
+4. **The boot watcher is one-shot, and archiving is not a navigation entry
+   point.** `uiWorkspace.watchNavigation` restores a selection exactly once, at
+   startup; afterwards it only watches for one thing — a main Session that has
+   become archived — and its reaction to that is `clearMain()`, which drops the
+   main reference *and* the persisted selection and leaves the stock hero
+   standing. Wrapping `startSession` and `restoreSelection` therefore misses
+   archiving completely, and a page that archives its main Session sits on
+   "choose a Workspace" until the user navigates by hand. The trace proves it:
+   the two `startSession` decisions that recovered the app are 20 seconds apart,
+   with nothing at all recorded in between. `clearMain` is the only choke point
+   every archive route passes through — the row action, the shortcut, the
+   stop-and-archive dialog, another plugin, and the watcher's own
+   `clearArchivedCurrent` — so that is what gets wrapped, and it reads the
+   Session's Workspace *before* delegating, because the clear is what erases the
+   identity that names it.
 
 ## Mounting
 
@@ -169,6 +194,14 @@ In the GUI:
   that row's folder.
 - Select **Follow DSH** on the page and repeat the last check: the new Session must
   stay in the most recently active Workspace instead.
+- Open a Session in a folder that is **not** the chosen one and archive it (the
+  row's archive button, or its **…** menu → **Archive session**) — the app must
+  come straight back to that same folder with a fresh New Session, never to the
+  *choose a Workspace* hero, and `probe-report.mjs` must show a `clearMain`
+  decision with `"branch":"keep"`. Archive a Session from **Ungrouped** instead:
+  that one must land in the chosen folder (`"branch":"default"`). With **Follow
+  DSH** selected, archiving the Session you are viewing must drop you to the
+  stock hero — the interception is off along with the rest of the policy.
 
 ## Disable or remove
 
@@ -185,7 +218,8 @@ In the GUI:
 
 The browser half depends on private members of the stock `uiWorkspace` service
 (`workspaces.list`, `workspaces.create`, `pickDirectory`, `sessions`,
-`selection`, `mainReference`, `lifetime`, `connectWorkspace`, `replaceMain`), on
+`selection`, `mainReference`, `lifetime`, `connectWorkspace`, `openWorkspace`,
+`replaceMain`, `clearMain`), on
 the Session summary's `blank` flag, and — for the Settings page — on the
 `settings.section` slot type and the `slots`/`locale` services. A DSH update
 may rename them; the wrappers then fail closed into the stock behavior (a console

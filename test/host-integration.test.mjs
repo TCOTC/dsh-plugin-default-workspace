@@ -46,4 +46,5 @@ if (response.status !== 200) throw new Error(`the Host does not serve this plugi
 if (!body.includes(`id: "${ID}"`)) throw new Error("the served bundle does not register this plugin's module id");
 if (!body.includes("DEFAULT_WORKSPACE_PATH")) throw new Error("the served bundle is not this plugin's code");
 if (!body.includes("continuesConversation")) throw new Error("the Host serves a stale bundle revision; unmount and remount the Loader entry (or restart the app) so it re-reads the file");
+if (!body.includes("clearMain")) throw new Error("the Host serves a revision from before the archive policy; bump POLICY_VERSION and reload");
 console.log("ok — the Host serves this plugin's browser half from the Client module graph");
