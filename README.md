@@ -1,7 +1,9 @@
 # dsh-plugin-default-workspace
 
 A small DSH plugin that pins the **no-context fallback Workspace of new
-Sessions** to one folder, chosen in the Settings dialog.
+Sessions** to one folder, chosen in the Settings dialog, and keeps the
+provisional **New Session** row out of the Workspace list until its composer
+holds input.
 
 ## Why this exists
 
@@ -35,6 +37,50 @@ The Host owns no setting for this. The only "default workspace" concept in DSH
 is created once on a pristine install and requires an empty Workspace registry
 *and* empty Session history, so it cannot be repointed on an installation that
 already has Sessions.
+
+## The New Session row
+
+Stock DSH draws the selected blank Session in the Workspace list right away: the
+row is labeled **New Session** and exists before anything was typed into it. On
+an app that opens on an empty New Session, that is a row in the sidebar the
+moment the window appears.
+
+This plugin keeps that one row out of the list until the composer holds
+something:
+
+- no text and no typed chip (a file reference or a command) -> the row is not
+  shown;
+- the first character typed, pasted, or inserted -> the row appears, without a
+  reload and without sending anything;
+- the composer cleared again -> the row hides again.
+
+While a turn is being submitted the draft clears *before* the Session stops
+being blank, so the row keeps its state for that moment instead of blinking out
+between the two events; the Session's first turn then releases the rule for good.
+
+Only the *current* blank Session is affected; every other blank Session is
+already hidden by DSH, and a Session becomes an ordinary row at its first turn,
+at which point this policy releases it. The Session itself, its unsent draft, and
+every navigation rule are untouched: the policy hides the row, it never changes
+which Session the list contains. Choosing **Follow DSH** on the settings page
+releases the row as well.
+
+The hide rule is a stylesheet keyed by Session id, not a change applied to the
+row. That ordering is the point: a row hidden *after* the list has laid it out
+would make the rows below jump down and then back up — clicking **New Session**
+would visibly bounce the list. Two things make the ordering hold:
+
+- the navigation flow pre-hides the Session at `connectBlank`, the moment the id
+  is known and before `replaceMain` makes its row visible — this is what covers
+  the *first* click, when the id is new and no rule exists for it yet;
+- the row policy subscribes to the Session projection as early as it can, so a
+  blank that enters the list by another route is still ahead of the render.
+
+A blank that is already the main selection is not pre-hidden (reopening the blank
+you are looking at keeps its row exactly as it was), and the stylesheet is
+rewritten only when the decision changes. The row keeps no extra attributes, and
+a page that never matches the id (older DSH, a different list) simply shows the
+stock row.
 
 ## Choosing the folder
 
@@ -70,8 +116,9 @@ from a bare `file:///…` path cannot resolve. See *Why localStorage* below.
 |---|---|
 | `package.json` | Package manifest: host half plus the `dsh.client` declaration and `exports["./client"]` the Client module system scans |
 | `lib/index.js` | Host half — deliberately empty; the policy and its Settings page are browser-side |
-| `lib/client.js` | Browser half — wraps `uiWorkspace.startSession`, `uiWorkspace.restoreSelection`, and `uiWorkspace.clearMain`, and contributes the **Default folder** Settings page |
+| `lib/client.js` | Browser half — wraps `uiWorkspace.startSession`, `uiWorkspace.restoreSelection`, and `uiWorkspace.clearMain`, contributes the **Default folder** Settings page, and keeps the provisional New Session row out of the list until its composer has input |
 | `test/interception.test.mjs` | Maintenance check: runs the real browser bundle against a fake `uiWorkspace` and asserts every rule above, the Settings page included |
+| `test/blank-row.test.mjs` | Maintenance check: runs the same bundle against a fake document and asserts the New Session row visibility rules |
 | `test/host-integration.test.mjs` | Maintenance check: asks the running Host whether it composes and serves this plugin's browser half |
 | `test/probe-report.mjs` | Reads the decision trace the browser half writes into the page's localStorage |
 | `CHANGELOG.md` | Release notes |
@@ -82,6 +129,13 @@ service instance. The two navigation wrappers delegate to the stock method for
 every case they do not own; the third wraps the clear that ends an archive.
 Every wrapper swallows its own failures back into the stock flow, so the worst
 case is exactly the stock behavior.
+
+The row policy is separate from those wrappers and reads the facts the Workspace
+list and the composer already publish — `data-row-key="session:<id>"` on a row,
+`data-composer-input` on the editable surface, and `data-composer-chip` on a
+typed reference — plus the Session list's own `retainedBy.mainView` and `blank`
+fields. Its only write is one stylesheet keyed by Session id, and a failure
+leaves the row exactly as stock drew it.
 
 ### Why localStorage
 
@@ -94,7 +148,7 @@ which is also where the policy lives. The cost is that it is per browser origin
 and invisible to the Host configuration file; the benefit is a plugin with no
 dependencies at all.
 
-## Four constraints this plugin had to learn the hard way
+## Five constraints this plugin had to learn the hard way
 
 Each one was learned against the live app rather than from documentation; the
 traces from `test/probe-report.mjs` are what pinned them down.
@@ -129,6 +183,17 @@ traces from `test/probe-report.mjs` are what pinned them down.
    `clearArchivedCurrent` — so that is what gets wrapped, and it reads the
    Session's Workspace *before* delegating, because the clear is what erases the
    identity that names it.
+5. **The New Session row is a DOM fact, not a service one.** No service exposes
+   "is this row rendered": the row comes from the stock Workspace browser, so
+   the only place to keep it out of the list is CSS aimed at the list. The rule
+   has to be in force *before* the row mounts. Hiding the row after the list has
+   laid it out makes the rows below jump down and back up, which is what made
+   **New Session** bounce the list on the first attempts; two orderings were
+   needed to remove it for good: the rule is keyed by Session id and written
+   from the projection subscription, and a brand new id is pre-hidden inside the
+   `connectBlank` wrapper — the one moment the id exists before `replaceMain`
+   renders the row. The *first* click is the interesting one, because that is
+   the only time the id is new.
 
 ## Mounting
 
@@ -172,6 +237,9 @@ $plugin = "$env:USERPROFILE\.dsh\plugins\dsh-plugin-default-workspace"
 # the interception rules, against a fake uiWorkspace service
 & $node "$plugin\test\interception.test.mjs"
 
+# the New Session row rules, against a fake document
+& $node "$plugin\test\blank-row.test.mjs"
+
 # the live Host actually composed and serves the browser half
 & $node "$plugin\test\host-integration.test.mjs"
 
@@ -184,8 +252,15 @@ In the GUI:
 - Open **Settings**: a **Default folder** tab must appear in the navigation,
   after the shipped sections. Pick a Workspace, or **Choose another folder…** and
   pick a directory; the page must show the new folder immediately.
+- Open or start an **empty** New Session: the Workspace list must not show its
+  **New Session** row, and clicking **New Session** must not move the rows below
+  at all. Type a character in the composer — the row must appear at once, still
+  named New Session; clear the composer and it must disappear again, again with
+  no motion of the rows below. `probe-report.mjs` must show `blank-row` decisions
+  with the Session id in `"hidden"` and then an empty `"hidden"`.
 - Quit and reopen the app while an **empty** New Session in another folder was the
-  last thing open — the app must come up on a New Session in the chosen folder.
+  last thing open — the app must come up on a New Session in the chosen folder,
+  and that row must stay hidden until you type.
 - Quit and reopen while a **conversation** in another folder was the last thing
   open — that conversation must come back, still in its own folder.
 - With a conversation open in another folder, press **New Session** (Ctrl+N) —
@@ -193,7 +268,8 @@ In the GUI:
   Ctrl+N must go to the chosen folder; a workspace row's own **+** always targets
   that row's folder.
 - Select **Follow DSH** on the page and repeat the last check: the new Session must
-  stay in the most recently active Workspace instead.
+  stay in the most recently active Workspace instead, and the empty New Session
+  row must be visible again, exactly as stock draws it.
 - Open a Session in a folder that is **not** the chosen one and archive it (the
   row's archive button, or its **…** menu → **Archive session**) — the app must
   come straight back to that same folder with a fresh New Session, never to the
@@ -218,14 +294,18 @@ In the GUI:
 
 The browser half depends on private members of the stock `uiWorkspace` service
 (`workspaces.list`, `workspaces.create`, `pickDirectory`, `sessions`,
-`selection`, `mainReference`, `lifetime`, `connectWorkspace`, `openWorkspace`,
-`replaceMain`, `clearMain`), on
+`selection`, `mainReference`, `lifetime`, `connectWorkspace`, `connectBlank`,
+`openWorkspace`, `replaceMain`, `clearMain`), on
 the Session summary's `blank` flag, and — for the Settings page — on the
-`settings.section` slot type and the `slots`/`locale` services. A DSH update
-may rename them; the wrappers then fail closed into the stock behavior (a console
-warning appears in the renderer, and the trace records `interception-failed`),
-and the page either disappears or reports `settings-page-failed`. Re-run the checks
-above after an update: a failure names the rule that broke.
+`settings.section` slot type and the `slots`/`locale` services. The row policy
+adds the stock Workspace browser's `data-row-key="session:<id>"` row marker and
+the composer's `data-composer-input` / `data-composer-chip` markers. A DSH update
+may rename any of them; the navigation wrappers then fail closed into the stock
+behavior (a console warning appears in the renderer, and the trace records
+`interception-failed`), the page either disappears or reports
+`settings-page-failed`, and the row policy records `blank-row-failed` and leaves
+the row as stock drew it (an id that no longer matches leaves the row visible).
+Re-run the checks above after an update: a failure names the rule that broke.
 
 `DEFAULT_WORKSPACE_PATH` and `DEFAULT_WORKSPACE_ID` in `lib/client.js` are now
 only the **initial** default, used while nothing is stored; the live value is the

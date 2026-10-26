@@ -1,8 +1,8 @@
 {
   "name": "dsh-plugin-default-workspace",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "private": true,
-  "description": "Pins the no-context default Workspace for new Sessions to a folder chosen in the DSH Settings dialog.",
+  "description": "Pins the no-context default Workspace for new Sessions to a folder chosen in the DSH Settings dialog, and keeps the provisional New Session row out of the Workspace list until its composer has input.",
   "type": "module",
   "main": "lib/index.js",
   "exports": {

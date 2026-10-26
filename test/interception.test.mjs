@@ -12,7 +12,8 @@
  * preference the page writes, its own navigation tab, and the folder chooser it
  * drives through the Desktop preload bridge. Rules 28–37 cover the archive
  * clear: the Workspace an archived main Session comes back in, the pinned
- * fallback, and every way that interception must stay out of the way. Exit code
+ * fallback, and every way that interception must stay out of the way. The New
+ * Session row visibility rules live in `test/blank-row.test.mjs`. Exit code
  * 0 means every rule still holds; a failure names the rule that broke.
  */
 import assert from "node:assert/strict";

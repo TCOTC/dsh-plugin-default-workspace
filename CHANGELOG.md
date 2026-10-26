@@ -1,5 +1,37 @@
 # Changelog
 
+## 1.4.0
+
+- **The provisional New Session row now stays out of the Workspace list until
+  the composer holds input.** Stock DSH draws the selected blank Session as a
+  **New Session** row as soon as it exists, so an app that opens on an empty New
+  Session shows a sidebar row nothing was typed into. The browser half now hides
+  that one row while the composer has no text and no typed chip, reveals it on
+  the first input — typed, pasted, or inserted — and hides it again when the
+  composer is cleared. The Session, its unsent draft, and every navigation rule
+  are untouched; the row is released at the Session's first turn, and **Follow
+  DSH** releases it along with the routing policy.
+- The hide rule is a stylesheet keyed by Session id, written from the Session
+  projection subscription *before* the row mounts. Hiding the row after the list
+  had laid it out made the rows below jump down and back up on **New Session**;
+  with the rule already in force the row enters the document with no size, so the
+  list below does not move. The projection subscription is established while
+  `uiWorkspace` boots, not on the first row.
+- The navigation flow now **pre-hides a blank before its row can render**: the
+  `connectBlank` wrapper sees the resolved Session id before `replaceMain`, the
+  one moment that precedes the row, and writes the rule there. This closes the
+  remaining first-click race, when the id is new and no rule exists for it yet.
+  A blank that is already the main selection keeps its settled state, so
+  reopening the blank you are looking at does not hide and show it again.
+- While a turn is submitting, the composer's cleared draft is not treated as an
+  empty composer: the row keeps its visible state until the turn starts, then
+  the rule is released for good.
+- `POLICY_VERSION` 7 → 11.
+- New `test/blank-row.test.mjs`: 17 rules over the main blank Session, the
+  composer's content state, rule generation, the hide/reveal/release cycle,
+  switching blanks, the not-ready projection, the pre-hide propagation, **Follow
+  DSH**, and disposal.
+
 ## 1.3.0
 
 - **Archiving the Session you are viewing no longer strands the app on its
